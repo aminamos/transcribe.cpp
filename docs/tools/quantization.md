@@ -12,8 +12,12 @@ classification / preset policy in `policy.cpp`. Built as
 
 This is the only place lossy quantization happens in the project.
 Python's `convert-<family>.py` never emits Q8_0, Q4_K_M, or any other
-block-quantized type. See [`conversion.md`](conversion.md) for the
-separation.
+block-quantized type — with one exception: when a source checkpoint is
+already block-quantized (parakeet-redux ships packed ternary weights),
+the converter may re-pack it into the matching ggml type directly so the
+trained quantization is preserved rather than dequantized-and-lost. See
+"Direct TQ1_0 emission" below and [`conversion.md`](conversion.md) for
+the separation.
 
 `transcribe-quantize` links `libggml` directly and calls
 `ggml_quantize_chunk` — the same reference quantizers `llama-quantize`
@@ -27,7 +31,8 @@ build/bin/transcribe-quantize INPUT.gguf OUTPUT.gguf --quant PRESET
 ```
 
 Presets: `F16`, `Q4_0`, `Q4_1`, `Q5_0`, `Q5_1`, `Q8_0`, `Q6_K`,
-`Q5_K_M`, `Q4_K_M`. Names match `llama.cpp`'s `llama-quantize` exactly.
+`Q5_K_M`, `Q4_K_M`, `TQ1_0`, `TQ2_0`. Names match `llama.cpp`'s
+`llama-quantize` exactly.
 
 Example:
 
@@ -76,7 +81,7 @@ per-preset bucket policy for every canonical tensor name.
 |----------|-----------------------------------------------------------------------|------------------------------------------------|
 | `Linear` | `ggml_mul_mat` operands: encoder FF, attention projections, predictor LSTM gates, joint projections, head | Block-quantized (Q4_K / Q5_K / Q6_K / Q8_0)    |
 | `Embed`  | Decoder token embedding (`dec.embed.token.weight`, `dec.token_embd.weight`) | Bumped to Q6_K in `_M` presets where shape-compatible, else `linear_fallback` |
-| `ConvPw` | 1×1 pointwise conv kernels in conformer blocks                        | F16 (im2col+matmul supports F16 matmul)        |
+| `ConvPw` | 1×1 pointwise conv kernels in conformer blocks, stored `[1, in, out]` | F16 (1-element rows can't block-quantize)      |
 | `Conv`   | Non-pointwise conv kernels: 2D pre-encode, depthwise                  | F32 or F16 (no quantized im2col in ggml)       |
 | `Norm`   | Biases, LayerNorm/BatchNorm/RMSNorm weights, per-head q_norm/k_norm, positional bias/encoding, frontend buffers | F32 (precision-sensitive, tiny) |
 
@@ -100,6 +105,9 @@ From `tools/transcribe-quantize/policy.cpp`:
 | `Q6_K`    | Q6_K        | Q8_0            | Q6_K        | —     | F32  | F16    | F32  |
 | `Q5_K_M`  | Q5_K        | Q8_0            | Q8_0        | Q6_K  | F32  | F16    | F32  |
 | `Q4_K_M`  | Q4_K        | Q8_0            | Q8_0        | Q6_K  | F32  | F16    | F32  |
+| `TQ1_0`   | TQ1_0       | Q8_0            | TQ1_0       | —     | F32  | F16    | F32  |
+| `TQ2_0`   | TQ2_0       | Q8_0            | TQ2_0       | —     | F32  | F16    | F32  |
+| `TQ1_128` | TQ1_128     | Q8_0            | TQ1_128     | —     | F32  | F16    | F32  |
 
 **`linear_fallback`** is the type used when a tensor's inner dim doesn't
 divide the target quant's block size. Every K preset (`Q6_K`, `Q5_K_M`,
@@ -128,6 +136,46 @@ deviates from `llama.cpp`'s `llama_tensor_get_type` (`Q4_K` → `Q4_1`,
 fallback rarely triggers. For our ASR models the fallback path is the
 dominant case on several families, so a uniform conservative floor beats
 a size-matched legacy scale.
+
+**Ternary presets** (`TQ1_0` at 1.6875 bpw, `TQ2_0` at 2.0625 bpw) share
+the K-quant block size of 256 but carry only a single fp16 scale per
+block — much coarser than the per-32/16 sub-block scales of K-quants.
+They exist for checkpoints that were *trained* at ternary precision
+(e.g. BitNet-family, packed-ternary exports like parakeet-redux), where
+the weight distribution is already `{-s, 0, +s}` per group. Requantizing
+a dense model to a TQ preset discards most magnitude information and is
+not a useful general-purpose tier.
+
+`TQ1_128` (1.75 bpw) is a downstream type matching moondream's
+`thrush-ternary-v2` checkpoint format exactly: 128-element blocks of 26
+packed bytes (five base-3 trits per byte, plane-interleaved) plus one
+fp16 scale per block. Unlike `TQ1_0` it needs no 128→256 scale merge, so
+`convert-parakeet-redux.py --tq1-128` is lossless. It is CPU-only
+(NEON on arm64, scalar elsewhere); Metal and Vulkan declare it
+unsupported and mul_mats dispatch to CPU via the scheduler.
+
+Backend coverage differs between the two: `TQ2_0` has a Metal kernel,
+`TQ1_0` does not — Metal declares it unsupported in `supports_op`
+(downstream patch `patches/ggml/0002-metal-declare-tq1_0-unsupported.patch`),
+so under a Metal primary `TQ1_0` mul_mats dispatch to the CPU backend
+through the scheduler's fallback list. Prefer `TQ2_0` when GPU offload
+matters; prefer `TQ1_0` for minimum size.
+
+**Direct TQ1_0 emission.** Generic `--quant TQ1_0` requantization uses a
+single block scale derived from the block maximum; on a packed-ternary
+source whose scale granularity is finer than 256 (parakeet-redux trains
+one fp16 scale per 128 elements) this collapses the weaker of each merged
+group pair and measurably degrades output. `convert-parakeet-redux.py
+--tq1` instead emits the ternary encoder tensors as pre-packed TQ1_0
+blocks, choosing each merged scale by decoded squared error (keep both
+groups' trits vs. drop the weak group). Pointwise-conv weights are packed
+too and stored flat as `[in, out]` — the loader accepts either the
+conv-kernel `[1, in, out]` form or the flat form for
+`conv.pointwise{1,2}.weight`, and `classify_tensor` routes the flat form
+into `Linear` (the `ne0 == 1` check). Running `transcribe-quantize
+--quant TQ1_0` over the result is still required for the remaining
+tensors; the pre-packed blocks pass through byte-identical via the
+`src.type == dst.type` memcpy path.
 
 **attn output** gets bumped in `_M` presets (to Q8_0), in the
 spirit of `llama.cpp`'s `_M` presets — which also keep a few
@@ -181,7 +229,7 @@ ggml types it will accept for each bucket. Post-unification, these are
 shared constants:
 
 - `transcribe::weights::kQuantLinearTypes` — F32, F16, BF16, Q4_0/1,
-  Q5_0/1, Q8_0, Q4_K, Q5_K, Q6_K.
+  Q5_0/1, Q8_0, Q4_K, Q5_K, Q6_K, TQ1_0, TQ2_0.
 - `transcribe::weights::kQuantConvTypes` — F32, F16.
 
 Every family must accept the full allowlist. A family that can't (e.g.
@@ -191,7 +239,8 @@ difference.
 ## Presets roadmap
 
 Today's preset table covers F16, the legacy block quants (Q4_0, Q4_1,
-Q5_0, Q5_1), Q8_0, Q6_K, Q5_K_M, and Q4_K_M. Planned additions:
+Q5_0, Q5_1), Q8_0, Q6_K, Q5_K_M, Q4_K_M, and the ternary quants TQ1_0 /
+TQ2_0. Planned additions:
 
 - Q3_K_S, IQ2_XXS, IQ4_XS — require imatrix support (not yet wired).
 

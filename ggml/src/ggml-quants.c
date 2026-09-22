@@ -2483,6 +2483,81 @@ void dequantize_row_tq2_0(const block_tq2_0 * GGML_RESTRICT x, float * GGML_REST
     }
 }
 
+// Downstream type: thrush-ternary-v2 compatible packed ternary, one fp16
+// scale per 128-element block. Byte j digit l (LSB-first base-3) holds
+// element 25*l + j for j < 25; byte 25's digits 0..2 hold elements
+// 125..127. See block_tq1_128 in ggml-common.h.
+
+void quantize_row_tq1_128_ref(const float * GGML_RESTRICT x, block_tq1_128 * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TQ1_128 == 0);
+    const int64_t nb = k / QK_TQ1_128;
+
+    for (int64_t i = 0; i < nb; i++) {
+        float amax = 0.0f; // absolute max
+
+        for (int j = 0; j < QK_TQ1_128; j++) {
+            amax = MAX(amax, fabsf(x[j]));
+        }
+
+        const float d  = amax;
+        const float id = d ? 1.0f/d : 0.0f;
+
+        y[i].d = GGML_FP32_TO_FP16(d);
+
+        for (size_t j = 0; j < 25; ++j) {
+            int q = 0;
+            for (int n = 4; n >= 0; --n) {
+                // -1, 0, 1 -> 0, 1, 2; lroundf matches roundf (half away)
+                int xi = lroundf(x[25*n + j] * id) + 1;
+                xi = xi < 0 ? 0 : xi > 2 ? 2 : xi;
+                q = q * 3 + xi;
+            }
+            y[i].qs[j] = q;
+        }
+        {
+            int q = 0;
+            for (int n = 2; n >= 0; --n) {
+                int xi = lroundf(x[125 + n] * id) + 1;
+                xi = xi < 0 ? 0 : xi > 2 ? 2 : xi;
+                q = q * 3 + xi;
+            }
+            y[i].qs[25] = q;
+        }
+
+        x += QK_TQ1_128;
+    }
+}
+
+size_t quantize_tq1_128(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+    (void)quant_weights; // not used
+    const size_t row_size = ggml_row_size(GGML_TYPE_TQ1_128, n_per_row);
+    quantize_row_tq1_128_ref(src, dst, (int64_t)nrow*n_per_row);
+    return nrow * row_size;
+}
+
+void dequantize_row_tq1_128(const block_tq1_128 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TQ1_128 == 0);
+    const int64_t nb = k / QK_TQ1_128;
+
+    const uint8_t pow3[5] = {1, 3, 9, 27, 81};
+
+    for (int64_t i = 0; i < nb; ++i) {
+
+        const float d = GGML_FP16_TO_FP32(x[i].d);
+
+        for (size_t j = 0; j < 25; ++j) {
+            for (int n = 0; n < 5; ++n) {
+                y[25*n + j] = (float) (x[i].qs[j] / pow3[n] % 3 - 1) * d;
+            }
+        }
+        for (int n = 0; n < 3; ++n) {
+            y[125 + n] = (float) (x[i].qs[25] / pow3[n] % 3 - 1) * d;
+        }
+
+        y += QK_TQ1_128;
+    }
+}
+
 // ====================== "True" 2-bit (de)-quantization
 
 void dequantize_row_iq2_xxs(const block_iq2_xxs * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
@@ -5603,6 +5678,10 @@ bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbyte
         case GGML_TYPE_TQ2_0:
             {
                 VALIDATE_ROW_DATA_D_F16_IMPL(block_tq2_0, data, nb);
+            } break;
+        case GGML_TYPE_TQ1_128:
+            {
+                VALIDATE_ROW_DATA_D_F16_IMPL(block_tq1_128, data, nb);
             } break;
         case GGML_TYPE_IQ1_S:
             {

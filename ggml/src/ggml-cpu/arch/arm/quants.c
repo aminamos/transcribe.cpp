@@ -1682,6 +1682,126 @@ void ggml_vec_dot_tq2_0_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const vo
 #endif
 }
 
+// Downstream type: thrush-ternary-v2 compatible packed ternary, one fp16
+// scale per 128-element block. Two weight blocks pair with each 256-element
+// Q8_K activation block. Plane-interleaved: byte j digit l holds element
+// 25*l + j (j < 25); byte 25's digits 0..2 hold elements 125..127.
+void ggml_vec_dot_tq1_128_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    assert(nrc == 1);
+    UNUSED(nrc);
+    UNUSED(bx);
+    UNUSED(by);
+    UNUSED(bs);
+
+    const block_tq1_128 * GGML_RESTRICT x = vx;
+    const block_q8_K    * GGML_RESTRICT y = vy;
+
+    const int nb = n / QK_K;
+
+#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
+    // Extract digits of a packed-trit vector: digit l = v/3^l - 3*v/3^(l+1),
+    // computed with reciprocal multiplies exact for v in [0, 242]:
+    //   v/3 = (v*171)>>9, v/9 = (v*57)>>9, v/27 = (v*19)>>9, v/81 = (v*203)>>14
+    #define TQ1_128_DECODE16(v, t)                                                        \
+        do {                                                                              \
+            uint16x8_t vlo = vmovl_u8(vget_low_u8(v));                                    \
+            uint16x8_t vhi = vmovl_u8(vget_high_u8(v));                                   \
+            uint8x16_t d1 = vcombine_u8(vqmovn_u16(vshrq_n_u16(vmulq_n_u16(vlo, 171), 9)), \
+                                        vqmovn_u16(vshrq_n_u16(vmulq_n_u16(vhi, 171), 9)));\
+            uint8x16_t d2 = vcombine_u8(vqmovn_u16(vshrq_n_u16(vmulq_n_u16(vlo,  57), 9)), \
+                                        vqmovn_u16(vshrq_n_u16(vmulq_n_u16(vhi,  57), 9)));\
+            uint8x16_t d3 = vcombine_u8(vqmovn_u16(vshrq_n_u16(vmulq_n_u16(vlo,  19), 9)), \
+                                        vqmovn_u16(vshrq_n_u16(vmulq_n_u16(vhi,  19), 9)));\
+            uint8x16_t d4 = vcombine_u8(vqmovn_u16(vshrq_n_u16(vmulq_n_u16(vlo, 203), 14)),\
+                                        vqmovn_u16(vshrq_n_u16(vmulq_n_u16(vhi, 203), 14)));\
+            const uint8x16_t m3 = vdupq_n_u8(3);                                          \
+            t[0] = vreinterpretq_s8_u8(vmlsq_u8(v,  d1, m3));                             \
+            t[1] = vreinterpretq_s8_u8(vmlsq_u8(d1, d2, m3));                             \
+            t[2] = vreinterpretq_s8_u8(vmlsq_u8(d2, d3, m3));                             \
+            t[3] = vreinterpretq_s8_u8(vmlsq_u8(d3, d4, m3));                             \
+            t[4] = vreinterpretq_s8_u8(d4);                                               \
+        } while (0)
+
+    #define TQ1_128_DECODE8(v, t)                                                         \
+        do {                                                                              \
+            uint16x8_t w = vmovl_u8(v);                                                   \
+            uint8x8_t d1 = vqmovn_u16(vshrq_n_u16(vmulq_n_u16(w, 171), 9));               \
+            uint8x8_t d2 = vqmovn_u16(vshrq_n_u16(vmulq_n_u16(w,  57), 9));               \
+            uint8x8_t d3 = vqmovn_u16(vshrq_n_u16(vmulq_n_u16(w,  19), 9));               \
+            uint8x8_t d4 = vqmovn_u16(vshrq_n_u16(vmulq_n_u16(w, 203), 14));              \
+            const uint8x8_t m3 = vdup_n_u8(3);                                            \
+            t[0] = vreinterpret_s8_u8(vmls_u8(v,  d1, m3));                               \
+            t[1] = vreinterpret_s8_u8(vmls_u8(d1, d2, m3));                               \
+            t[2] = vreinterpret_s8_u8(vmls_u8(d2, d3, m3));                               \
+            t[3] = vreinterpret_s8_u8(vmls_u8(d3, d4, m3));                               \
+            t[4] = vreinterpret_s8_u8(d4);                                                \
+        } while (0)
+
+    float sumf = 0.0f;
+
+    for (int i = 0; i < nb; ++i) {
+        for (int h = 0; h < 2; ++h) {
+            const block_tq1_128 * xb = &x[2*i + h];
+            const int8_t * yqs = y[i].qs + h*128;
+
+            int32x4_t sumi  = vdupq_n_s32(0);
+            int32x2_t sumi8 = vdup_n_s32(0);
+
+            // bytes 0..15: digit plane l covers elements 25*l + [0,16)
+            {
+                int8x16_t t[5];
+                TQ1_128_DECODE16(vld1q_u8(xb->qs), t);
+                for (int l = 0; l < 5; ++l) {
+                    sumi = vdotq_s32(sumi, t[l], vld1q_s8(yqs + 25*l));
+                }
+            }
+
+            // bytes 16..23: digit plane l covers elements 25*l + [16,24)
+            {
+                int8x8_t t[5];
+                TQ1_128_DECODE8(vld1_u8(xb->qs + 16), t);
+                for (int l = 0; l < 5; ++l) {
+                    sumi8 = vdot_s32(sumi8, t[l], vld1_s8(yqs + 25*l + 16));
+                }
+            }
+
+            // byte 24 -> elements 24,49,74,99,124; byte 25 -> 125,126,127
+            int tail = 0;
+            {
+                int q = xb->qs[24];
+                for (int l = 0; l < 5; ++l) {
+                    tail += (q % 3) * yqs[25*l + 24];
+                    q /= 3;
+                }
+                q = xb->qs[25];
+                for (int l = 0; l < 3; ++l) {
+                    tail += (q % 3) * yqs[125 + l];
+                    q /= 3;
+                }
+            }
+
+            // digits are {0,1,2}; trits are digits-1, so subtract the
+            // activation row sum once per block.
+            const int32_t ysum = vaddlvq_s16(vld1q_s16(y[i].bsums + h*8));
+
+            const int32_t sum = vaddvq_s32(sumi) + vaddv_s32(sumi8) + tail - ysum;
+            sumf += (float) sum * (GGML_CPU_FP16_TO_FP32(xb->d) * y[i].d);
+        }
+    }
+
+    *s = sumf;
+
+    #undef TQ1_128_DECODE16
+    #undef TQ1_128_DECODE8
+
+#else
+    UNUSED(x);
+    UNUSED(y);
+    UNUSED(nb);
+    ggml_vec_dot_tq1_128_q8_K_generic(n, s, bs, vx, bx, vy, by, nrc);
+#endif
+}
+
 void ggml_vec_dot_q2_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     assert(nrc == 1);
     UNUSED(nrc);

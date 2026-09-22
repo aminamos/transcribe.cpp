@@ -116,6 +116,15 @@ void quantize_row_tq2_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, 
     quantize_row_tq2_0_ref(x, y, k);
 }
 
+// Downstream type: thrush-ternary-v2 compatible packed ternary, one fp16
+// scale per 128-element block (see block_tq1_128 in ggml-common.h).
+
+void quantize_row_tq1_128(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, int64_t k) {
+    assert(k % QK_TQ1_128 == 0);
+    block_tq1_128 * GGML_RESTRICT y = vy;
+    quantize_row_tq1_128_ref(x, y, k);
+}
+
 //===================================== Q8_K ==============================================
 
 void quantize_row_q8_K_generic(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
@@ -525,6 +534,50 @@ void ggml_vec_dot_tq1_0_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, 
         }
 
         sumf += (float) sum * (GGML_CPU_FP16_TO_FP32(x[i].d) * y[i].d);
+    }
+
+    *s = sumf;
+}
+
+// Downstream type: thrush-ternary-v2 compatible packed ternary, one fp16
+// scale per 128-element block. Two weight blocks pair with each 256-element
+// Q8_K activation block. Byte j digit l holds element 25*l + j (j < 25);
+// byte 25's digits 0..2 hold elements 125..127.
+void ggml_vec_dot_tq1_128_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    assert(nrc == 1);
+    UNUSED(nrc);
+    UNUSED(bx);
+    UNUSED(by);
+    UNUSED(bs);
+
+    const block_tq1_128 * GGML_RESTRICT x = vx;
+    const block_q8_K    * GGML_RESTRICT y = vy;
+
+    const int nb = n / QK_K;
+
+    float sumf = 0.0f;
+
+    for (int i = 0; i < nb; ++i) {
+        const int8_t * GGML_RESTRICT yqs = y[i].qs;
+        for (int h = 0; h < 2; ++h) {
+            const block_tq1_128 * xb = &x[2*i + h];
+            int32_t sum = 0;
+            for (int j = 0; j < 25; ++j) {
+                int q = xb->qs[j];
+                for (int l = 0; l < 5; ++l) {
+                    sum += (q % 3 - 1) * yqs[h*128 + 25*l + j];
+                    q /= 3;
+                }
+            }
+            {
+                int q = xb->qs[25];
+                for (int l = 0; l < 3; ++l) {
+                    sum += (q % 3 - 1) * yqs[h*128 + 125 + l];
+                    q /= 3;
+                }
+            }
+            sumf += (float) sum * (GGML_CPU_FP16_TO_FP32(xb->d) * y[i].d);
+        }
     }
 
     *s = sumf;

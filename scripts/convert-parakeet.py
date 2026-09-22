@@ -149,6 +149,29 @@ VARIANT_PROFILES: dict[str, dict] = {
         "license_name": "Creative Commons Attribution 4.0",
         "license_link": "https://creativecommons.org/licenses/by/4.0/",
     },
+    # moondream's ternary rebuild of v3 ("thrush-ternary-v2" packed
+    # safetensors). Same architecture/tokenizer as v3; the encoder's
+    # linear weights are {-1,0,+1} * per-128-group scales and are
+    # dequantized to fp32 upstream of this pipeline by
+    # convert-parakeet-redux.py, so conversion output is identical in
+    # shape and KV to a v3 GGUF. The model ships an extra vad_head
+    # (Photon-side segmentation aid) which this pipeline does not
+    # consume — Handy runs its own VAD.
+    "parakeet-redux": {
+        "variant": "tdt-0.6b-v3",
+        "display_name": "Parakeet Redux 0.6B",
+        "version": "v3",
+        "size_label": "0.6B",
+        "head_kind": "tdt",
+        "expected_vocab_size": 8192,
+        "languages": V3_LANGUAGES,
+        "lang_detect": True,
+        "author": "moondream",
+        "organization": "moondream",
+        "license": "cc-by-4.0",
+        "license_name": "Creative Commons Attribution 4.0",
+        "license_link": "https://creativecommons.org/licenses/by/4.0/",
+    },
     # primeLine's German fine-tune of v3. The .nemo carries a
     # model_config.yaml whose encoder/decoder/joint/decoding/
     # preprocessor/tokenizer/model_defaults/loss sections are identical

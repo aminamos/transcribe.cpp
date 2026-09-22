@@ -732,6 +732,29 @@ constexpr const char * kTag = kFamilyTag;
         (slot) = _t;                                                                                             \
     } while (0)
 
+// Pointwise-conv weights (k=1) are ordinary matmuls in every reference
+// implementation; the conv-kernel storage [1, in, out] (ne0 == 1) exists
+// only because no block quant can encode 1-element rows. A converter may
+// instead store them flat as [in, out] under a linear quant type (e.g.
+// TQ1_0 for ternary-trained weights) — the encoder feeds both layouts to
+// ggml_mul_mat via the direct-pw path. ne0 discriminates the two forms:
+// 1 => conv kernel (CONV_TYPES), in => flat linear (LINEAR_TYPES).
+#define GET_PW(slot, name, in, out)                                                                                  \
+    do {                                                                                                             \
+        ggml_tensor * _probe = ggml_get_tensor(ctx_meta, (name));                                                    \
+        ggml_tensor * _t     = nullptr;                                                                              \
+        if (_probe == nullptr || _probe->ne[0] == 1) {                                                               \
+            _t = transcribe::weights::find_tensor(ctx_meta, (name), { TRANSCRIBE_QUANT_CONV_TYPES }, { 1, in, out }, \
+                                                  kTag);                                                             \
+        } else {                                                                                                     \
+            _t = transcribe::weights::find_tensor(ctx_meta, (name), { TRANSCRIBE_QUANT_LINEAR_TYPES }, { in, out },  \
+                                                  kTag);                                                             \
+        }                                                                                                            \
+        if (_t == nullptr)                                                                                           \
+            return TRANSCRIBE_ERR_GGUF;                                                                              \
+        (slot) = _t;                                                                                                 \
+    } while (0)
+
 }  // namespace
 
 transcribe_status build_parakeet_weights(ggml_context *          ctx_meta,
@@ -822,9 +845,9 @@ transcribe_status build_parakeet_weights(ggml_context *          ctx_meta,
         // back to d_model.
         GET_F32(b.norm_conv_w, lname("enc.blocks.%d.norm_conv.weight", i), d_model);
         GET_F32(b.norm_conv_b, lname("enc.blocks.%d.norm_conv.bias", i), d_model);
-        GET_CONV(b.conv_pw1_w, lname("enc.blocks.%d.conv.pointwise1.weight", i), 1, d_model, 2 * d_model);
+        GET_PW(b.conv_pw1_w, lname("enc.blocks.%d.conv.pointwise1.weight", i), d_model, 2 * d_model);
         GET_CONV(b.conv_dw_w, lname("enc.blocks.%d.conv.depthwise.weight", i), k, 1, d_model);
-        GET_CONV(b.conv_pw2_w, lname("enc.blocks.%d.conv.pointwise2.weight", i), 1, d_model, d_model);
+        GET_PW(b.conv_pw2_w, lname("enc.blocks.%d.conv.pointwise2.weight", i), d_model, d_model);
         GET_F32(b.conv_bn_w, lname("enc.blocks.%d.conv.bn.weight", i), d_model);
         GET_F32(b.conv_bn_b, lname("enc.blocks.%d.conv.bn.bias", i), d_model);
         if (hp.enc_conv_norm_type == ParakeetHParams::ConvNormType::BatchNorm) {
@@ -944,5 +967,6 @@ transcribe_status build_parakeet_weights(ggml_context *          ctx_meta,
 #undef GET_F32
 #undef GET_CONV
 #undef GET_LIN
+#undef GET_PW
 
 }  // namespace transcribe::parakeet

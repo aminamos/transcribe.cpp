@@ -287,6 +287,20 @@ typedef struct {
 } block_tq2_0;
 static_assert(sizeof(block_tq2_0) == sizeof(ggml_half) + QK_K / 4, "wrong tq2_0 block size/padding");
 
+// 1.75 bpw — downstream type, not upstream ggml.
+// Packed ternary with one fp16 scale per 128-element block, matching the
+// thrush-ternary-v2 checkpoint format (parakeet-redux): 5 trits per byte,
+// least-significant base-3 digit first. Elements are plane-interleaved so
+// digit l across bytes maps to a contiguous run (SIMD-friendly): byte j
+// digit l holds element 25*l + j for j < 25; byte 25's first 3 digits hold
+// elements 125..127.
+#define QK_TQ1_128 128
+typedef struct {
+    uint8_t qs[26]; // 25 bytes of 5 trits + 1 byte of 3 trits
+    ggml_half d;
+} block_tq1_128;
+static_assert(sizeof(block_tq1_128) == sizeof(ggml_half) + 26, "wrong tq1_128 block size/padding");
+
 //
 // Super-block quantization structures
 //

@@ -244,21 +244,21 @@ namespace {
 
 const Preset kPresets[] = {
     // Uniform fp tiers.
-    { "F16",    GGML_TYPE_F16,  GGML_TYPE_F16,  GGML_TYPE_F16,  GGML_TYPE_COUNT, GGML_TYPE_F32, GGML_TYPE_F16, GGML_TYPE_F32,
-     /*MOSTLY_F16*/ 1                                                                                                                              },
+    { "F16",     GGML_TYPE_F16,     GGML_TYPE_F16,  GGML_TYPE_F16,     GGML_TYPE_COUNT, GGML_TYPE_F32, GGML_TYPE_F16, GGML_TYPE_F32,
+     /*MOSTLY_F16*/ 1                                                                                                                                     },
 
     // Legacy blockwise quants. Block size 32 — any sensible inner dim
     // divides cleanly, so linear_fallback is a formality.
-    { "Q4_0",   GGML_TYPE_Q4_0, GGML_TYPE_F16,  GGML_TYPE_Q4_0, GGML_TYPE_COUNT, GGML_TYPE_F32, GGML_TYPE_F16,
-     GGML_TYPE_F32,                                                                                                           /*MOSTLY_Q4_0*/ 2    },
-    { "Q4_1",   GGML_TYPE_Q4_1, GGML_TYPE_F16,  GGML_TYPE_Q4_1, GGML_TYPE_COUNT, GGML_TYPE_F32, GGML_TYPE_F16,
-     GGML_TYPE_F32,                                                                                                           /*MOSTLY_Q4_1*/ 3    },
-    { "Q5_0",   GGML_TYPE_Q5_0, GGML_TYPE_F16,  GGML_TYPE_Q5_0, GGML_TYPE_COUNT, GGML_TYPE_F32, GGML_TYPE_F16,
-     GGML_TYPE_F32,                                                                                                           /*MOSTLY_Q5_0*/ 8    },
-    { "Q5_1",   GGML_TYPE_Q5_1, GGML_TYPE_F16,  GGML_TYPE_Q5_1, GGML_TYPE_COUNT, GGML_TYPE_F32, GGML_TYPE_F16,
-     GGML_TYPE_F32,                                                                                                           /*MOSTLY_Q5_1*/ 9    },
-    { "Q8_0",   GGML_TYPE_Q8_0, GGML_TYPE_F16,  GGML_TYPE_Q8_0, GGML_TYPE_COUNT, GGML_TYPE_F32, GGML_TYPE_F16,
-     GGML_TYPE_F32,                                                                                                           /*MOSTLY_Q8_0*/ 7    },
+    { "Q4_0",    GGML_TYPE_Q4_0,    GGML_TYPE_F16,  GGML_TYPE_Q4_0,    GGML_TYPE_COUNT, GGML_TYPE_F32, GGML_TYPE_F16,
+     GGML_TYPE_F32,                                                                                                                  /*MOSTLY_Q4_0*/ 2    },
+    { "Q4_1",    GGML_TYPE_Q4_1,    GGML_TYPE_F16,  GGML_TYPE_Q4_1,    GGML_TYPE_COUNT, GGML_TYPE_F32, GGML_TYPE_F16,
+     GGML_TYPE_F32,                                                                                                                  /*MOSTLY_Q4_1*/ 3    },
+    { "Q5_0",    GGML_TYPE_Q5_0,    GGML_TYPE_F16,  GGML_TYPE_Q5_0,    GGML_TYPE_COUNT, GGML_TYPE_F32, GGML_TYPE_F16,
+     GGML_TYPE_F32,                                                                                                                  /*MOSTLY_Q5_0*/ 8    },
+    { "Q5_1",    GGML_TYPE_Q5_1,    GGML_TYPE_F16,  GGML_TYPE_Q5_1,    GGML_TYPE_COUNT, GGML_TYPE_F32, GGML_TYPE_F16,
+     GGML_TYPE_F32,                                                                                                                  /*MOSTLY_Q5_1*/ 9    },
+    { "Q8_0",    GGML_TYPE_Q8_0,    GGML_TYPE_F16,  GGML_TYPE_Q8_0,    GGML_TYPE_COUNT, GGML_TYPE_F32, GGML_TYPE_F16,
+     GGML_TYPE_F32,                                                                                                                  /*MOSTLY_Q8_0*/ 7    },
 
     // K-quants. Block size 256; linear_fallback is Q8_0 for every K
     // preset, not a scaled-down legacy quant, because fallback triggers
@@ -273,12 +273,38 @@ const Preset kPresets[] = {
     //      vs F16 and keeps fallback quality monotonically above main.
     // The tradeoff vs Q4_1/Q5_1 fallback is a few percent on file size,
     // paid on tensors that couldn't be K-quantized anyway.
-    { "Q6_K",   GGML_TYPE_Q6_K, GGML_TYPE_Q8_0, GGML_TYPE_Q6_K, GGML_TYPE_COUNT, GGML_TYPE_F32, GGML_TYPE_F16,
-     GGML_TYPE_F32,                                                                                                           /*MOSTLY_Q6_K*/ 18   },
-    { "Q5_K_M", GGML_TYPE_Q5_K, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0, GGML_TYPE_Q6_K,  GGML_TYPE_F32, GGML_TYPE_F16,
-     GGML_TYPE_F32,                                                                                                           /*MOSTLY_Q5_K_M*/ 17 },
-    { "Q4_K_M", GGML_TYPE_Q4_K, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0, GGML_TYPE_Q6_K,  GGML_TYPE_F32, GGML_TYPE_F16,
-     GGML_TYPE_F32,                                                                                                           /*MOSTLY_Q4_K_M*/ 15 },
+    { "Q6_K",    GGML_TYPE_Q6_K,    GGML_TYPE_Q8_0, GGML_TYPE_Q6_K,    GGML_TYPE_COUNT, GGML_TYPE_F32, GGML_TYPE_F16,
+     GGML_TYPE_F32,                                                                                                                  /*MOSTLY_Q6_K*/ 18   },
+    { "Q5_K_M",  GGML_TYPE_Q5_K,    GGML_TYPE_Q8_0, GGML_TYPE_Q8_0,    GGML_TYPE_Q6_K,  GGML_TYPE_F32, GGML_TYPE_F16,
+     GGML_TYPE_F32,                                                                                                                  /*MOSTLY_Q5_K_M*/ 17 },
+    { "Q4_K_M",  GGML_TYPE_Q4_K,    GGML_TYPE_Q8_0, GGML_TYPE_Q8_0,    GGML_TYPE_Q6_K,  GGML_TYPE_F32, GGML_TYPE_F16,
+     GGML_TYPE_F32,                                                                                                                  /*MOSTLY_Q4_K_M*/ 15 },
+
+    // Ternary quants. Block size 256 with one fp16 scale per block —
+    // coarser scale granularity than the per-32/16 K-quants, so these
+    // are for models *trained* at ternary precision (BitNet-style or
+    // packed-ternary checkpoints), not as a general-purpose size tier:
+    // requantizing a dense model to TQ throws away most of each block's
+    // magnitude information.
+    //
+    // linear_fallback is Q8_0 for the same reason as the K presets
+    // (fallback tensors are shape-awkward and shouldn't be penalized
+    // twice). TQ1_0 has no Metal kernel — mul_mats on those tensors
+    // dispatch to the CPU backend via the scheduler; TQ2_0 is the
+    // Metal-capable ternary tier.
+    { "TQ1_0",   GGML_TYPE_TQ1_0,   GGML_TYPE_Q8_0, GGML_TYPE_TQ1_0,   GGML_TYPE_COUNT, GGML_TYPE_F32, GGML_TYPE_F16,
+     GGML_TYPE_F32,                                                                                                                  /*MOSTLY_TQ1_0*/ 36  },
+    { "TQ2_0",   GGML_TYPE_TQ2_0,   GGML_TYPE_Q8_0, GGML_TYPE_TQ2_0,   GGML_TYPE_COUNT, GGML_TYPE_F32, GGML_TYPE_F16,
+     GGML_TYPE_F32,                                                                                                                  /*MOSTLY_TQ2_0*/ 37  },
+
+    // TQ1_128 is a downstream type matching thrush-ternary-v2 exactly —
+    // 128-element blocks, 26 packed bytes + one fp16 scale per block. It
+    // exists for checkpoints *trained* with per-128 ternary scales (e.g.
+    // parakeet-redux); converters emit it pre-packed. CPU-only like TQ1_0.
+    // The file_type tag (43) is a downstream value: LlamaFileType ends at
+    // ~42 and has no entry for this type.
+    { "TQ1_128", GGML_TYPE_TQ1_128, GGML_TYPE_Q8_0, GGML_TYPE_TQ1_128, GGML_TYPE_COUNT, GGML_TYPE_F32, GGML_TYPE_F16,
+     GGML_TYPE_F32,                                                                                                                  /*downstream*/ 43    },
 };
 
 constexpr size_t kPresetCount = sizeof(kPresets) / sizeof(kPresets[0]);

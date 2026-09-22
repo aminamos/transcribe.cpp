@@ -348,7 +348,13 @@ ggml_tensor * conv_module(ggml_context * ctx, ggml_tensor * x, const BlockView &
     // B == 1 for single-shot; the offline batched encoder passes B > 1.
     const int64_t B       = x->ne[2];
 
-    if (policy.direct_pw) {
+    // The im2col fallback needs the [1, in, out] conv-kernel layout; a
+    // weight stored flat as [in, out] (ne0 != 1 — e.g. quantized TQ1_0)
+    // must take the direct mul_mat path regardless of policy.
+    const bool direct_pw1 = policy.direct_pw || b.conv_pw1_w->ne[0] != 1;
+    const bool direct_pw2 = policy.direct_pw || b.conv_pw2_w->ne[0] != 1;
+
+    if (direct_pw1) {
         // Pointwise conv 1 as direct mul_mat in [d_model, T, B] layout.
         // Kernel ne=[1, d_model, 2*d_model] → reshape to [d_model, 2*d_model].
         // Force F32 accumulation for F16 weights (see mul_mat_f32acc in
@@ -500,7 +506,7 @@ ggml_tensor * conv_module(ggml_context * ctx, ggml_tensor * x, const BlockView &
 
     x = ggml_silu(ctx, x);
 
-    if (policy.direct_pw) {
+    if (direct_pw2) {
         // Transpose back: [T, d_model] -> [d_model, T].
         x = ggml_cont(ctx, ggml_permute(ctx, x, 1, 0, 2, 3));
 
