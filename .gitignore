@@ -88,3 +88,8 @@ WER_TESTING.md
 
 # Local working notes (plans, drafts) — never committed
 /notes/
+
+.wrangler/
+.commandcode/
+*.sqlite-shm
+*.sqlite-wal
